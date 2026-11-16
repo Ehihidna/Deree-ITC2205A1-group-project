@@ -1,0 +1,153 @@
+// Domain model from the report, Figure 7 ("Class diagram: domain model").
+// Each class is one model and one table. Rows that belong to a user
+// (profile, workouts, sets, plans, plan exercises) are deleted with the
+// user, so deleting an account removes all of its data (NFR-4).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Goal {
+  STRENGTH
+  MUSCLE_GAIN
+  ENDURANCE
+  WEIGHT_LOSS
+}
+
+enum ExperienceLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum PlanType {
+  WORKOUT // a single workout (F-6)
+  PROGRAM // a multi-week program (F-7)
+}
+
+// Only these three states are stored. Generating, validating and failed are
+// temporary states of a request and never reach the database (Figure 5).
+enum PlanStatus {
+  PROPOSED
+  ACCEPTED
+  REJECTED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  profile      Profile?
+  workouts     Workout[]
+  plans        Plan[]
+}
+
+// Questionnaire answers (F-2).
+model Profile {
+  id             String          @id @default(cuid())
+  userId         String          @unique
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal           Goal
+  experience     ExperienceLevel
+  // Values match Exercise.equipment, e.g. "barbell", "dumbbell", "body only".
+  equipment      String[]
+  daysPerWeek    Int
+  sessionMinutes Int
+  // Free-text injuries or movements to avoid, e.g. "lower back".
+  restrictions   String[]
+  updatedAt      DateTime        @updatedAt
+}
+
+// Read-only catalogue imported from Free Exercise DB (F-3, F-8).
+// The id is the dataset id, e.g. "Barbell_Squat".
+model Exercise {
+  id               String         @id
+  name             String
+  primaryMuscles   String[]
+  secondaryMuscles String[]
+  // null in the dataset for exercises without a clear equipment type.
+  equipment        String?
+  level            String // beginner | intermediate | expert
+  category         String // strength, stretching, cardio, ...
+  force            String? // push | pull | static
+  mechanic         String? // compound | isolation
+  instructions     String[]
+  // Paths relative to the dataset's exercises/ folder, e.g. "Barbell_Squat/0.jpg".
+  images           String[]
+  workoutSets      WorkoutSet[]
+  planExercises    PlanExercise[]
+
+  @@index([equipment])
+}
+
+// A training session (F-4, F-5). It may follow an accepted plan.
+model Workout {
+  id         String       @id @default(cuid())
+  userId     String
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId     String?
+  plan       Plan?        @relation(fields: [planId], references: [id], onDelete: SetNull)
+  startedAt  DateTime     @default(now())
+  finishedAt DateTime?
+  sets       WorkoutSet[]
+
+  @@index([userId, startedAt])
+}
+
+model WorkoutSet {
+  id         String   @id @default(cuid())
+  workoutId  String
+  workout    Workout  @relation(fields: [workoutId], references: [id], onDelete: Cascade)
+  exerciseId String
+  exercise   Exercise @relation(fields: [exerciseId], references: [id])
+  setNumber  Int
+  weightKg   Float
+  reps       Int
+  createdAt  DateTime @default(now())
+
+  @@index([workoutId])
+  @@index([exerciseId])
+}
+
+// A workout or program proposed by the AI agent (F-6, F-7, F-10).
+model Plan {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      PlanType
+  status    PlanStatus     @default(PROPOSED)
+  // 1 for a single workout.
+  weeks     Int            @default(1)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  exercises PlanExercise[]
+  workouts  Workout[]
+
+  @@index([userId, status])
+}
+
+// One exercise of a plan. Every row has sets, reps and rest, which closes
+// the gaps in AI exercise advice reported by Zaleski et al. (2024).
+model PlanExercise {
+  id          String   @id @default(cuid())
+  planId      String
+  plan        Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  exerciseId  String
+  exercise    Exercise @relation(fields: [exerciseId], references: [id])
+  // Day of the week within the plan, starting at 1.
+  day         Int
+  // Position of the exercise within the day, starting at 1.
+  order       Int
+  sets        Int
+  // A number or a range, e.g. "8" or "8-12".
+  reps        String
+  restSeconds Int
+
+  @@unique([planId, day, order])
+}
